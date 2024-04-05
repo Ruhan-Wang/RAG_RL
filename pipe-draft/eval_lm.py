@@ -109,6 +109,7 @@ def iteration_over_dataset(
     ranking_strategy="first",
     num_docs_to_rank=1,
     num_tokens_to_rank_logprob=16,
+    encodings=None,
     update=False
 ):
     nlls = []
@@ -184,6 +185,55 @@ def iteration_over_dataset(
     
     return nlls, all_token_ppls, all_tokens_to_predict, all_chosen_doc_ids
 
+def multi_batch_training(
+    model,
+    tokenizer,
+    device,
+    max_length,
+    stride=4,
+    retrieval_dataset=None,
+    retrieval_max_length=256,
+    ranking_strategy="first",
+    num_docs_to_rank=1,
+    num_tokens_to_rank_logprob=16,
+    encodings=None,
+    update=False,
+    batch_size=1
+):
+    # 切分dataset为batch
+    num_batches = len(encodings.input_ids) // batch_size
+    batch_encodings = encodings.chunk(num_batches)
+    
+    # 初始化结果列表
+    all_nlls = []
+    all_token_ppls = []
+    all_tokens_to_predict = []
+    all_chosen_doc_ids = []
+    
+    # 迭代每个batch进行训练
+    for batch in tqdm(batch_encodings):
+        nlls, token_ppls, tokens_to_predict, chosen_doc_ids = iteration_over_dataset(
+            model,
+            tokenizer,
+            device,
+            max_length,
+            stride=stride,
+            retrieval_dataset=retrieval_dataset,
+            retrieval_max_length=retrieval_max_length,
+            ranking_strategy=ranking_strategy,
+            num_docs_to_rank=num_docs_to_rank,
+            num_tokens_to_rank_logprob=num_tokens_to_rank_logprob,
+            encodings=batch,
+            update=update
+        )
+        
+        # 将每个batch的结果添加到结果列表中
+        all_nlls.append(nlls)
+        all_token_ppls.append(token_ppls)
+        all_tokens_to_predict.append(tokens_to_predict)
+        all_chosen_doc_ids.append(chosen_doc_ids)
+    
+    return all_nlls, all_token_ppls, all_tokens_to_predict, all_chosen_doc_ids
 
 def eval_dataset(
         model,
@@ -192,6 +242,7 @@ def eval_dataset(
         device,
         max_length,
         output_dir=None,
+        batch_size=1,
         stride=4,
         normalization_level="word",
         retrieval_dataset=None,
@@ -220,17 +271,19 @@ def eval_dataset(
     print("Normalization factor (num tokens/words..):", counter)
     
     # 得到reranker的结果
-    nlls, all_token_ppls, all_tokens_to_predict, all_chosen_doc_ids = iteration_over_dataset(
+    nlls, all_token_ppls, all_tokens_to_predict, all_chosen_doc_ids = multi_batch_training(
         model,
         tokenizer,
         device,
         max_length,
+        batch_size=batch_size,
         stride=stride,
         retrieval_dataset=retrieval_dataset,
         retrieval_max_length=retrieval_max_length,
         ranking_strategy=ranking_strategy,
         num_docs_to_rank=num_docs_to_rank,
         num_tokens_to_rank_logprob=num_tokens_to_rank_logprob,
+        encodings=encodings,
         update=update
     )
 
@@ -317,6 +370,7 @@ if __name__ == '__main__':
     parser.add_argument("--dataset_name", type=str, default=None)
     parser.add_argument("--dataset_split", type=str, default="test")
     parser.add_argument("--normalization_level", choices=["word", "token"], default="word")
+    parser.add_argument("--batch_size", type=int, default=1)
 
     # retrieval params
     parser.add_argument("--retrieved_file", type=str, default=None)
